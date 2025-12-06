@@ -23,10 +23,10 @@ def shuffle_batch(batch):
 
     return shuffled_batch
 
-def create_minibatches(batch, minibatch_size):
+def create_minibatches(batch, minibatch_size, device="cuda"):
     minibatches = torch.split(batch['obs'], minibatch_size, dim=0)
     split_batch = {
-        key: torch.split(batch[key], minibatch_size, dim=0) for key in batch
+        key: torch.split(batch[key].to(device), minibatch_size, dim=0) for key in batch
     }
     num_minibatches = len(split_batch['obs'])
     minibatches = [

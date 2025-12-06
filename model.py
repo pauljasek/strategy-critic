@@ -19,7 +19,7 @@ class WorldModel(nn.Module):
         self.predictor = nn.Sequential(
             nn.Linear(compressed_dim + action_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(compressed_dim + action_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
 
@@ -40,12 +40,12 @@ class WorldModel(nn.Module):
     def forward(self, obs, action):
         encoded_state = self.encoder(obs)
 
-        predictor_input = torch.cat([encoded_state, action])
+        predictor_input = torch.cat([encoded_state, action.unsqueeze(-1)], dim=-1)
 
         out = self.predictor(predictor_input)
         next_obs = self.obs_predictor(out)
-        reward = self.reward_predictor(out)
-        done = self.done_predictor(out)
+        reward = self.reward_predictor(out).squeeze(-1)
+        done = self.done_predictor(out).squeeze(-1)
 
         return next_obs, reward, done
 
