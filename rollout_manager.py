@@ -3,11 +3,14 @@ import torch
 import numpy as np
 
 def rollout_worker_fn(args):
-    policy, env = args
+    env, policy = args
     trajectory = []
     obs, info = env.reset()
     while True:
-        action = env.action_space.sample() # TODO: Replace with policy
+        if policy is not None:
+            action = policy(obs)
+        else:
+            action = env.action_space.sample() # TODO: Replace with policy
         next_obs, reward, terminated, truncated, info = env.step(action)
 
         trajectory.append(
@@ -55,8 +58,8 @@ class RolloutManager:
             processes=self.num_rollout_workers
         )
 
-    def rollout(self, policy, env):
-        trajectories = self.pool.map(rollout_worker_fn, [(policy, env) for i in range(self.num_rollout_workers)])
+    def rollout(self, env, policy=None):
+        trajectories = self.pool.map(rollout_worker_fn, [(env, policy) for i in range(self.num_rollout_workers)])
         return trajectories
 
     def shutdown(self):
