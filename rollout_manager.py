@@ -5,6 +5,7 @@ import numpy as np
 def rollout_worker_fn(args):
     env, policy = args
     trajectory = []
+    total_return = 0
     obs, info = env.reset()
     while True:
         if policy is not None:
@@ -24,6 +25,7 @@ def rollout_worker_fn(args):
                 'info': info,
             }
         )
+        total_return += reward
 
         obs = next_obs
 
@@ -48,7 +50,7 @@ def rollout_worker_fn(args):
     trajectory['terminated'] = torch.tensor(trajectory['terminated'], dtype=torch.float32)
     trajectory['truncated'] = torch.tensor(trajectory['truncated'], dtype=torch.float32)
 
-    return trajectory
+    return trajectory, total_return
 
 
 class RolloutManager:
@@ -59,8 +61,8 @@ class RolloutManager:
         )
 
     def rollout(self, env, policy=None):
-        trajectories = self.pool.map(rollout_worker_fn, [(env, policy) for i in range(self.num_rollout_workers)])
-        return trajectories
+        outputs = self.pool.map(rollout_worker_fn, [(env, policy) for i in range(self.num_rollout_workers)])
+        return outputs
 
     def shutdown(self):
         self.pool.close()
