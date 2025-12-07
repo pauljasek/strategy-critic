@@ -1,6 +1,6 @@
 import argparse
 import tqdm
-import copy
+import itertools
 
 import torch
 import torch.nn.functional as F
@@ -21,11 +21,13 @@ def get_policy_parameters(policy_model):
 
 def train():
     parser = argparse.ArgumentParser(description="Strategy Critic training script")
-    parser.add_argument("--iters", type=int, default=10, help="The number of training iterations to run")
-    parser.add_argument("--num-rollout-workers", type=int, default=16, help="The number of rollout workers")
+    parser.add_argument("--iters", type=int, default=100, help="The number of training iterations to run")
+    parser.add_argument("--warmup-iters", type=int, default=10, help="The number of warmup training iterations")
+    parser.add_argument("--num-rollout-workers", type=int, default=64, help="The number of rollout workers")
     parser.add_argument("--episodes-per-worker", type=int, default=1, help="The number of episodes for each worker to rollout")
     parser.add_argument("--minibatch-size", type=int, default=64, help="Minibatch size")
-    parser.add_argument("--num-sgd-iters", type=int, default=30, help="Number of SGD iters")
+    parser.add_argument("--num-sgd-iters", type=int, default=10, help="Number of SGD iters")
+    parser.add_argument("--num-policy-update-iters", type=int, default=100, help="Number of policy update SGD iters")
     parser.add_argument("--learning-rate", '-lr', type=float, default=1e-3, help="SGD learning rate")
 
     args = parser.parse_args()
@@ -54,35 +56,44 @@ def train():
     world_model_optimizer = torch.optim.Adam(world_model.parameters(), lr=args.learning_rate)
     strategy_critic_optimizer = torch.optim.Adam(strategy_critic_model.parameters(), lr=args.learning_rate)
 
-    for iter_num in tqdm.tqdm(list(range(args.iters))):
+    for iter_num in tqdm.tqdm(list(range(args.iters + args.warmup_iters))):
         num_policies = args.num_rollout_workers
-        policies = []
         
         world_model_cpu = world_model.to("cpu")
 
+        policy_models = []
         for i in range(num_policies):
             policy_model = PolicyModel(
                 input_dim=8,
                 hidden_dim=8,
                 action_dim=2,
             ).to(device)
+            policy_models.append(policy_model)
 
-            policy_optimizer = torch.optim.Adam(policy_model.parameters(), lr=args.learning_rate)
-            
-            policy_losses = []
-            for sgd_iter in range(args.num_sgd_iters):
-                policy_parameters = get_policy_parameters(policy_model)
-                pred_return = strategy_critic_model(policy_parameters)
-                policy_loss = -pred_return
+        if iter_num >= args.warmup_iters:
+            policy_optimizer = torch.optim.Adam(
+                itertools.chain(*[policy_model.parameters() for policy_model in policy_models]), 
+                lr=0.01
+            )
+
+            for sgd_iter in range(args.num_policy_update_iters):
+                policy_parameters_batch = torch.stack([get_policy_parameters(policy_model).to(device) for policy_model in policy_models], dim=0)
+                pred_return = strategy_critic_model(policy_parameters_batch)
+                policy_return_loss = -torch.mean(pred_return)
+                policy_weight_loss = 100 * torch.mean(torch.square(policy_parameters_batch))
+
+                policy_loss = policy_return_loss + policy_weight_loss
 
                 policy_optimizer.zero_grad()
                 policy_loss.backward()
                 policy_optimizer.step()
 
-                policy_losses.append(float(policy_loss.detach()))
+            print('Policy Return Loss:', float(policy_return_loss.detach()))
+            print('Policy Weight Loss:', float(policy_weight_loss.detach()))
+            print('Policy Loss:', float(policy_loss.detach()))
 
-            print('Policy Loss:', sum(policy_losses)/len(policy_losses))            
-
+        policies = []
+        for policy_model in policy_models:
             policy_model = policy_model.to("cpu")
             policy = Policy(
                 policy_model=policy_model,
@@ -104,8 +115,10 @@ def train():
         batch = create_batch(trajectories, shuffle=True)
         returns_batch = torch.tensor(total_returns, dtype=torch.float32).to(device)
 
-        policy_parameters_batch = torch.stack([get_policy_parameters(policy.policy_model).to(device) for policy in policies], dim=0)
-        strategy_critic_losses = []
+        policy_parameters_batch = torch.stack([get_policy_parameters(policy_model).to(device) for policy_model in policy_models], dim=0)
+
+        print('Policy Parameter Magnitude:', float(torch.max(torch.abs(policy_parameters_batch)).detach()))
+
         for sgd_iter in range(args.num_sgd_iters):
             pred_returns = strategy_critic_model(policy_parameters_batch)
             strategy_critic_loss = torch.mean(F.mse_loss(pred_returns, returns_batch))
@@ -114,13 +127,11 @@ def train():
             strategy_critic_loss.backward()
             strategy_critic_optimizer.step()
 
-            strategy_critic_losses.append(float(strategy_critic_loss.detach()))
+        print('Strategy Critic Loss:', float(strategy_critic_loss.detach()))        
 
-        print('Strategy Critic Loss:', sum(strategy_critic_losses)/len(strategy_critic_losses))            
-
-        world_model_losses = []
         for sgd_iter in range(args.num_sgd_iters):
             batch = shuffle_batch(batch)
+            world_model_losses = []
             for minibatch in create_minibatches(batch, args.minibatch_size, device=device):
                 obs = minibatch['obs']
                 action = minibatch['action']

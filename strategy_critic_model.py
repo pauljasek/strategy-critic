@@ -14,4 +14,4 @@ class StrategyCriticModel(nn.Module):
 
     def forward(self, strategy_params):
         value = self.critic(strategy_params)
-        return value
+        return value.squeeze(-1)
